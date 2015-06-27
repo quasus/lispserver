@@ -1,3 +1,9 @@
+# Vim auxiliary files
+*~
+*.swp
+*.swo
+*.swn
+
 # Object files
 *.o
 *.ko

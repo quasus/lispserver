@@ -1,0 +1,29 @@
+#!/bin/sh
+
+IO_SOCKET="$HOME/.lispserver/sockets/io-socket"
+
+lisp_eval () {
+    sbclient "$IO_SOCKET" "$@"
+}
+
+cmd="$1"
+shift
+
+lisp_say () {
+    form="(format t \"~A~%\" $1)"
+    shift
+    lisp_eval "$form" "$@"
+}
+
+case "$cmd" in
+    eval)
+        lisp_eval "$@"
+        ;;
+    say)
+        lisp_say "$@"
+        ;;
+    *)
+        echo "Unknown command: $cmd."
+        exit 1
+        ;;
+esac
