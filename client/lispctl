@@ -15,12 +15,68 @@ lisp_say () {
     lisp_eval "$form" "$@"
 }
 
+lisp_make () {
+    name="$1"
+    shift
+    if [ -z "$name" ]
+    then
+        echo "Make error: name missing."
+        exit 1
+    fi
+    while [ $# -gt 0 ]
+    do
+        option=$1
+        shift
+        case "$option" in
+            --entry)
+                entry=$1
+                shift
+                ;;
+            --form)
+                form=$1
+                shift
+                ;;
+            *)
+                echo "Unknown option: $1"
+                exit 1
+        esac
+    done
+    if [ -n "$form" ]
+    then
+        lisp_eval "(lisp-server::make \"$name\" :form \"$form\")" `pwd`/
+        exit 0
+    fi
+    if [ -n "$entry" ]
+    then
+        lisp_eval "(lisp-server::make \"$name\" :entry \"$entry\")" `pwd`/
+        exit 0
+    fi
+    lisp_eval "(lisp-server::make \"$name\")" `pwd`/
+}
+
+lisp_install () {
+    lisp_eval "(lisp-server::install $1 (first lisp-server-dev::*servers*))" `pwd`/
+}
+
+lisp_uninstall () {
+    lisp_eval "(lisp-server::uninstall \"$1\" (first lisp-server-dev::*servers*))"
+}
+
 case "$cmd" in
     eval)
         lisp_eval "$@"
         ;;
     say)
         lisp_say "$@"
+        ;;
+    make)
+        lisp_make "$@"
+        ;;
+    install)
+        lisp_install "$1"
+        ;;
+    uninstall)
+        lisp_uninstall "$1"
         ;;
     *)
         echo "Unknown command: $cmd."
