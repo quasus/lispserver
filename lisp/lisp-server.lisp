@@ -115,20 +115,20 @@
     (stop-server server)))
 
 (defun make (name &key
-                  (entry (intern "MAIN" (find-package (string-upcase name))))
-                  (form `(funcall ',entry uiop:*command-line-arguments*)))
-  (with-open-file (o name
+                  (entry (concatenate 'string "'" (string-upcase name) "::main"))
+                  (form (format nil "(funcall ~A uiop:*command-line-arguments*)" entry)))
+  (with-open-file (o (merge-pathnames name)
                      :direction :output
                      :if-does-not-exist :create
                      :if-exists :supersede)
     (with-standard-io-syntax
       (format o "#!/bin/sh
-lispctl eval ~S `pwd` \"$0\" \"$@\"
+lispctl eval ~A `pwd`/ \"$0\" \"$@\"
 "
               (uiop/run-program:escape-sh-token (if (stringp form)
                                                     form
                                                     (write-to-string form))))))
-  (uiop/run-program:run-program `("chmod" "+x" ,name)))
+  (uiop/run-program:run-program `("chmod" "+x" ,(namestring (merge-pathnames name)))))
 
 (defun server-user-directory (server)
   (server-name server))
@@ -147,8 +147,12 @@ lispctl eval ~S `pwd` \"$0\" \"$@\"
     (let ((target (merge-pathnames name bindir)))
       (when (probe-file target)
         (error "Installation error: file ~A already exists." target))
-      (ensure-directories-exist target)
-      (rename-file name target)
+      (dolist (sys (rest (assoc :depends-on software)))
+        (or (asdf:require-system sys)
+            #+quicklisp (ql:quickload sys)))
+      ;; rename-file doesn't work between devices
+      (uiop:run-program `("mv" ,(namestring (merge-pathnames name))
+                          ,(namestring (ensure-directories-exist target))))
       (let ((new-soft `(((:file ,target)
                          (:time ,(file-write-date target))
                          ,@software) ,@soft)))

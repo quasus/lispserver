@@ -12,10 +12,16 @@
            #:stop-server
            #:init
            #:*servers*
-           #:*default-user-directory*))
+           #:*default-user-directory*
+           #:make
+           #:install
+           #:uninstall))
 
 (defpackage #:lisp-server-user
   (:nicknames #:lisp-server)
   (:use #:cl #:trivial-sbcl-server)
   (:export #:make-server
-           #:start-server))
+           #:start-server
+           #:make
+           #:install
+           #:uninstall))
