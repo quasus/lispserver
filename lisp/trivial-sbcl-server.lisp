@@ -81,7 +81,9 @@
                          ;; in case of errors, tell the client
                          ;; in case there are connection errors, never mind
                          (simple-error (e) (format err "~A~%" e) (finish-output err) nil)
-                         (error () (format err "Lisp error.~%") (finish-output err) nil)))))
+                         (sb-int:simple-file-error (e) (format err "~A~%" e) (finish-output err) nil )
+                         (file-error (e) (format err "Error with file ~A~%" (file-error-pathname e)) (finish-output err) nil)    
+                         (error (e) (format err "Lisp error of type ~A.~%" (type-of e)) (finish-output err) nil)))))
             (finish-output out)
             (finish-output err)
             (format io "r~A" (if res (code-char 0) (code-char 1)))
