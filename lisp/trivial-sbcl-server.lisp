@@ -56,7 +56,7 @@
    (threads :accessor server-threads :initform '())))
 
 (defun worker (server sock handler)
-  (unwind-protect
+  (ignore-errors
     (let ((io (sb-bsd-sockets:socket-make-stream sock :input t :output t)))
       (let ((out (make-instance 'server-stream :stream io :code #\o))
             (err (make-instance 'server-stream :stream io :code #\e))) 
@@ -87,10 +87,10 @@
             (finish-output out)
             (finish-output err)
             (format io "r~A" (if res (code-char 0) (code-char 1)))
-            (finish-output io)))))
-    (ignore-errors
-      (sb-bsd-sockets:socket-close sock))
-    (remove sb-thread:*current-thread* (server-threads server))))
+            (finish-output io))))))
+  (ignore-errors
+    (sb-bsd-sockets:socket-close sock)) 
+  (remove sb-thread:*current-thread* (server-threads server)))
 
 (defun listener (server handler)
   (let ((task-id 0)
