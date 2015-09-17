@@ -58,38 +58,43 @@
 (defun worker (server sock handler)
   (ignore-errors
     (let ((io (sb-bsd-sockets:socket-make-stream sock :input t :output t)))
-      (let ((out (make-instance 'server-stream :stream io :code #\o))
-            (err (make-instance 'server-stream :stream io :code #\e))) 
-        (let* ((argc (let ((str (make-string 6)))
-                       (read-sequence str io)
-                       (parse-integer str :radix 16)))
-               (argv (loop :repeat argc
-                           :with len-str = (make-string 6)
-                           :do (read-sequence len-str io)
-                           :collect (let* ((len (parse-integer len-str :radix 16))
-                                           (msg (make-string len)))
-                                      (read-sequence msg io)
-                                      msg))))
-          (let ((res (ignore-errors
-                       (handler-case
-                         (funcall handler argv
-                                  :standard-input io
-                                  :standard-output out
-                                  :error-output err
-                                  :query-io (make-two-way-stream io out) 
-                                  :terminal-io (make-two-way-stream io out))
-                         ;; in case of errors, tell the client
-                         ;; in case there are connection errors, never mind
-                         (simple-error (e) (format err "~A~%" e) (finish-output err) nil)
-                         (sb-int:simple-file-error (e) (format err "~A~%" e) (finish-output err) nil )
-                         (file-error (e) (format err "Error with file ~A~%" (file-error-pathname e)) (finish-output err) nil)    
-                         (error (e) (format err "Lisp error of type ~A.~%" (type-of e)) (finish-output err) nil)))))
-            (finish-output out)
-            (finish-output err)
-            (format io "r~A" (if res (code-char 0) (code-char 1)))
-            (finish-output io))))))
+      (ignore-errors
+        (let ((out (make-instance 'server-stream :stream io :code #\o))
+              (err (make-instance 'server-stream :stream io :code #\e))) 
+          (let* ((argc (let ((str (make-string 6)))
+                         (read-sequence str io)
+                         (parse-integer str :radix 16)))
+                 (argv (loop :repeat argc
+                             :with len-str = (make-string 6)
+                             :do (read-sequence len-str io)
+                             :collect (let* ((len (parse-integer len-str :radix 16))
+                                             (msg (make-string len)))
+                                        (read-sequence msg io)
+                                        msg))))
+            (let ((res (ignore-errors
+                         (handler-case
+                           (funcall handler argv
+                                    :standard-input io
+                                    :standard-output out
+                                    :error-output err
+                                    :query-io (make-two-way-stream io out) 
+                                    :terminal-io (make-two-way-stream io out))
+                           ;; in case of errors, tell the client
+                           ;; in case there are connection errors, never mind
+                           (simple-error (e) (format err "~A~%" e) (finish-output err) nil)
+                           (sb-int:simple-file-error (e) (format err "~A~%" e) (finish-output err) nil )
+                           (file-error (e) (format err "Error with file ~A~%" (file-error-pathname e)) (finish-output err) nil)    
+                           (error (e) (format err "Lisp error of type ~A.~%" (type-of e)) (finish-output err) nil)))))
+              (finish-output out)
+              (finish-output err)
+              (format io "r~A" (if res (code-char 0) (code-char 1)))
+              (finish-output io)))))
+      (ignore-errors (finish-output io))
+      (ignore-errors (sb-impl::release-fd-stream-resources io))))
   (ignore-errors
-    (sb-bsd-sockets:socket-close sock)) 
+    (sb-sys:invalidate-descriptor (sb-bsd-sockets:socket-file-descriptor sock)))
+  (ignore-errors
+    (sb-bsd-sockets:socket-close sock))
   (remove sb-thread:*current-thread* (server-threads server)))
 
 (defun listener (server handler)
@@ -138,3 +143,4 @@
 
 (defun stop-server (server)
   (server-cleanup server))
+
