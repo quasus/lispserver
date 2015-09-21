@@ -2,65 +2,107 @@
 
 (defvar *servers* nil)
 
-(defparameter *default-user-directory*
+(defparameter *user-directory*
   (merge-pathnames #p".lispserver/" (user-homedir-pathname)))
 
-(defun default-bindir (user-directory)
-  (merge-pathnames #p"bin/" user-directory))
+(defparameter *lisp-server-home*
+  #p"/usr/local/share/lispserver/"
+  "Global directory.")
 
-(defun socket-directory (user-directory)
-  (merge-pathnames #p"sockets/" user-directory))
+(defun socket-directory (directory)
+  (merge-pathnames #p"sockets/" directory))
 
-(defun socket-file (user-directory)
-  (merge-pathnames #p"io-socket" (socket-directory user-directory)))
+(defun socket-file (directory)
+  (merge-pathnames #p"io-socket" (socket-directory directory)))
 
-(defun rc-file (user-directory)
-  (merge-pathnames #p"rc.lisp" user-directory))
+(defun rc-file (directory)
+  (merge-pathnames #p"rc.lisp" directory))
 
-(defun software-file (user-directory)
-  (merge-pathnames #p"etc/software.lisp" user-directory))
+#|
 
-(defun dependencies-file (user-directory)
-  (merge-pathnames #p"etc/dependencies.lisp" user-directory))
+Dependency management
 
-(defun read-software-list (user-directory)
-  (with-open-file (in (software-file user-directory)
-                      :direction :input
+|#
+
+(defstruct dependency lib names)
+
+(defun parse-dependency-line (string)
+  "Given a string, return correspondent dependency or NIL if STRING is empty or starts with a space."
+  (if (or (zerop (length string))
+          (eql (char string 0) #\Space))
+      nil
+      ;; basically, split by spaces
+      (let ((name-deps (loop :for c :across string
+                             :for end :from 0
+                             :with start = 0
+                             :when (and (eql c #\Space)
+                                        (> end start))
+                             :collect (subseq string start end)
+                             :when (and (= end (1- (length string)))
+                                        (not (eql c #\Space)))
+                             :collect (subseq string start)
+                             :when (eql c #\Space)
+                             :do (setf start (1+ end)))))
+        (make-dependency :lib (first name-deps) :names (rest name-deps)))))
+
+(defun parse-dependency-file (file)
+  "Return list of dependencies, T if the file exists and NIL, NIL if it does not.  Can signal ERRORs if something goes wrong with the system."
+  (with-open-file (in file :direction :input
                       :if-does-not-exist nil)
-    (when in
-      (with-standard-io-syntax
-        (read in)))))
+    (if in
+        (values (loop :for line = (read-line in nil)
+                      :while line
+                      :when (parse-dependency-line line)
+                      :collect it)
+                t)
+        (values nil nil))))
 
-(defun dump-software-list (software user-directory)
-  (with-open-file (out (ensure-directories-exist (software-file user-directory))
-                       :direction :output
-                       :if-exists :supersede)
-    (with-standard-io-syntax
-      (print software out))))
+(defun load-lib (lib &key reload quicklisp)
+  "Load the ASDF system.  :QUICKLISP should be one of NIL, T, or :ASK (interactively ask the user). If the system has been loaded, return generalized truth.  If ASDF could not find it or it is not available in Quicklisp, return NIL.  If something goes wrong with ASDF or Quicklisp, they signal their errors.  It is an error to actually try to use Quicklisp if it is not supported."
+  (let ((system (asdf:find-system lib nil)))
+    (if system
+        (if reload
+            (asdf:load-system system)
+            (asdf:require-system system))
+        #+quicklisp
+        (if (or (eq quicklisp t)
+                (and (eq quicklisp :ask)
+                     (y-or-n-p "Download ~S using quicklisp?" lib)))
+            (handler-case
+              (ql:quickload lib)
+              (ql:system-not-found () nil))
+            nil)
+        #-quicklisp
+        (when quicklisp
+          (error "Quicklisp is not supported."))))) 
 
-(defun software-dependencies (software)
-  (multiple-value-bind (explicit implicit) (loop :for s :in software
-                                                 :append (rest (assoc :depends-on s)) :into explicit
-                                                 :append (loop :for d :in (rest (assoc :depends-on s))
-                                                               :append (asdf:system-depends-on (asdf:find-system d))) :into implicit
-                                                 :finally (return (values explicit implicit)))
-    (remove-duplicates (set-difference explicit implicit :test #'equal) :test #'equal)))
+;;; Dependencies: auxiliary functions for the server
 
-(defun read-dependencies (user-directory)
-  (with-open-file (in (dependencies-file user-directory)
-                      :direction :input
-                      :if-does-not-exist nil)
-    (when in
-      (with-standard-io-syntax
-        (read in)))))
+(defun load-dependencies (dependencies &key reload quicklisp)
+  "Load the list of dependencies.  There should be no errors."
+  (dolist (d dependencies)
+    (handler-case
+      (or (load-lib (dependency-lib d) :reload reload :quicklisp quicklisp)
+          (if quicklisp
+              (apply #'warn "The library ~A needed by~#[ none~; ~A~; ~A and ~A~:;~@{~#[~; and~] ~A~^,~}~] could not be found by ASDF or downloaded by Quicklisp."
+                     (dependency-lib d) (dependency-names d))
+              (apply #'warn "The library ~A needed by~#[ none~; ~A~; ~A and ~A~:;~@{~#[~; and~] ~A~^,~}~] could not be found by ASDF." (dependency-lib d) (dependency-names d))))
+      (error (e) (apply #'warn "~A~%Error loading library ~A needed by~#[ none~; ~A~; ~A and ~A~:;~@{~#[~; and~] ~A~^,~}~]." e (dependency-lib d) (dependency-names d))))))
 
-(defun dump-dependencies (list user-directory)
-  (with-open-file (out (ensure-directories-exist (dependencies-file user-directory))
-                       :direction :output
-                       :if-exists :supersede)
-    (with-standard-io-syntax
-      (write-line "#+(or)  \"This file has been automatically generated.\"" out)
-      (print list out))))
+(defun load-libs-safely (libs &key reload quicklisp)
+  "Load the list of dependencies.  There should be no errors."
+  (dolist (l libs)
+    (handler-case
+      (or (load-lib l :reload reload :quicklisp quicklisp)
+          (if quicklisp
+              (warn "The library ~S could not be found by ASDF or downloaded by Quicklisp." l)
+              (warn "The library ~S could not be found by ASDF." l)))
+      (error (e) (warn "~A~%Error loading library ~S." e l)))))
+
+(defun dependency-file (directory)
+  (merge-pathnames #p"dependencies.conf" directory))
+
+;;; Setting up the server
 
 (defun script-function (function)
   (lambda (args
@@ -89,14 +131,21 @@
                       ,argv0))
                ,(read-from-string cmd))))))
 
-(defun init (&optional (user-directory *default-user-directory*))
+;;;; Interface
+
+(defun init (&key (user-directory *user-directory*)
+                  (lisp-server-home *lisp-server-home*))
   (let ((socket-file (socket-file user-directory))
         (name (namestring user-directory)))
     (let ((server (find name *servers* :key #'server-name :test #'equal)))
       (when server
         (stop-server server)
         (setf *servers* (remove server *servers*))))
-    (mapc #'asdf:require-system (read-dependencies user-directory))
+    (dolist (dir (list user-directory lisp-server-home))
+      (handler-case
+        (load-dependencies (parse-dependency-file (dependency-file dir)))
+        ;; there may be unlikely errors reading the file
+        (error (e) (warn "~A" e))))
     (ensure-directories-exist (socket-file user-directory))
     (handler-case
       (delete-file socket-file)
@@ -104,19 +153,19 @@
     (load (rc-file user-directory) :if-does-not-exist nil)
     (push (trivial-sbcl-server:make-server name socket-file) *servers*)))
 
-(defun start (&optional (name (namestring *default-user-directory*)))
+(defun start (&optional (name (namestring *user-directory*)))
   (let ((server (or (find name *servers* :key #'server-name :test #'equal)
                     (error "Server ~A does not exist." name))))
     (start-server server (script-function #'lispserver-handler))))
 
-(defun stop (&optional (name (namestring *default-user-directory*)))
+(defun stop (&optional (name (namestring *user-directory*)))
   (let ((server (or (find name *servers* :key #'server-name :test #'equal)
                     (error "Server ~A does not exist." name))))
     (stop-server server)))
 
-(defun make (name &key
-                  (entry (concatenate 'string "'" (string-upcase name) "::main"))
-                  (form (format nil "(funcall ~A uiop:*command-line-arguments*)" entry)))
+(defun shell-wrapper (name &key
+                           (entry (concatenate 'string "'" (string-upcase name) "::MAIN"))
+                           (form (format nil "(funcall ~A uiop:*command-line-arguments*)" entry)))
   (with-open-file (o (merge-pathnames name)
                      :direction :output
                      :if-does-not-exist :create
@@ -129,59 +178,3 @@ lispctl eval ~A `pwd`/ \"$0\" \"$@\"
                                                     form
                                                     (write-to-string form))))))
   (uiop/run-program:run-program `("chmod" "+x" ,(namestring (merge-pathnames name)))))
-
-(defun server-user-directory (server)
-  (server-name server))
-
-(defun install (software server &optional (bindir (default-bindir (server-user-directory server))))
-  (let* ((soft (read-software-list (server-user-directory server)))
-         (name (second (assoc :name software)))
-         (file (merge-pathnames name)))
-    (when (member name soft
-                  :key (lambda (s)
-                         (second (assoc :name s)))
-                  :test #'equal)
-      (error "Installation error: ~A has already been installed." name))
-    (unless (probe-file file)
-      (error "Installation error: file ~A does not exist." file))
-    (let ((target (merge-pathnames name bindir)))
-      (when (probe-file target)
-        (error "Installation error: file ~A already exists." target))
-      (dolist (sys (rest (assoc :depends-on software)))
-        (or (asdf:require-system sys)
-            #+quicklisp (ql:quickload sys)))
-      ;; rename-file doesn't work between devices
-      (uiop:run-program `("mv" ,(namestring (merge-pathnames name))
-                          ,(namestring (ensure-directories-exist target))))
-      (let ((new-soft `(((:file ,target)
-                         (:time ,(file-write-date target))
-                         ,@software) ,@soft)))
-        (dump-dependencies (software-dependencies new-soft) (server-user-directory server))
-        (dump-software-list new-soft (server-user-directory server))))))
-
-(defun uninstall (name server)
-  (let* ((soft (read-software-list (server-user-directory server)))
-         (software (find name soft
-                         :key (lambda (s)
-                                (second (assoc :name s)))
-                         :test #'equal)))
-    (unless software
-      (error "Deinstallation error: ~A has not been installed." name))
-    (setf soft (delete name soft
-                       :key (lambda (s)
-                              (second (assoc :name s)))
-                       :test #'equal))
-    (dump-software-list soft (server-user-directory server))
-    (dump-dependencies (software-dependencies soft) (server-user-directory server))
-    (let* ((file (second (assoc :file software)))
-           (time (second (assoc :time software)))
-           (actual-time (if file
-                            (file-write-date file)
-                            nil)))
-      (cond ((and file
-                  (not (probe-file file)))
-             (warn "File ~A does not exist." file))
-            ((not (and time actual-time))
-             (warn "Cannot check if ~A has been modified since installation.  You can remove it manually." file))
-            ((/= time actual-time) (warn "File ~A has been modified since installation.  You can remove it manually." file))
-            (t (delete-file file))))))
