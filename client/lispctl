@@ -75,7 +75,7 @@ case "$cmd" in
             deps=$@
             file=`lisp_eval '(write-string (namestring (lisp-server-dev::dependency-file lisp-server-dev::*user-directory*)))'`
             register "$file" "$name" $deps
-        } && lisp_eval '(lisp-server-dev::load-libs-safely uiop:*command-line-arguments* :reload nil :quicklisp t)' nil nil $deps
+        } && lisp_eval '(lisp-server-dev::load-libs-safely uiop:*command-line-arguments* :reload nil :quicklisp :if-available)' nil nil $deps
         ;;
     unregister)
         name=$1; shift

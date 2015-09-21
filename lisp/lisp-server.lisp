@@ -57,24 +57,35 @@ Dependency management
                 t)
         (values nil nil))))
 
+#|
+Quicklisp may be or may be not available at compile time.  The following code
+does not rely on compile time, hence clumsy calling of Quicklisp functions.  It
+would be nice to set a handler for QL:SYSTEM-NOT-FOUND, but the type of
+condition must be known at compile time.  I use ql:find-system instead, before
+querying the user.  It seems to be innocuous.
+|#
+
 (defun load-lib (lib &key reload quicklisp)
-  "Load the ASDF system.  :QUICKLISP should be one of NIL, T, or :ASK (interactively ask the user). If the system has been loaded, return generalized truth.  If ASDF could not find it or it is not available in Quicklisp, return NIL.  If something goes wrong with ASDF or Quicklisp, they signal their errors.  It is an error to actually try to use Quicklisp if it is not supported."
+  "Load the ASDF system.  If ASDF cannot find a system, Quicklisp is optionally used.  QUICKLISP should be one of NIL, :ASK (interactively ask the user, if Quicklisp is available), :IF-AVAILABLE (silently try to use Quicklisp if it is available), :FORCE (try to use Quicklisp and report an error, if it is not available), T (equivalent to :IF-AVAILABLE. If the system has been loaded, return generalized truth.  If ASDF could not find it or it is not available in Quicklisp, return NIL.  If something goes wrong with ASDF or Quicklisp, they signal their errors."
   (let ((system (asdf:find-system lib nil)))
     (if system
         (if reload
             (asdf:load-system system)
             (asdf:require-system system))
-        #+quicklisp
-        (if (or (eq quicklisp t)
-                (and (eq quicklisp :ask)
-                     (y-or-n-p "Download ~S using quicklisp?" lib)))
-            (handler-case
-              (ql:quickload lib)
-              (ql:system-not-found () nil))
-            nil)
-        #-quicklisp
-        (when quicklisp
-          (error "Quicklisp is not supported."))))) 
+        (let ((ql-package (find-package "QUICKLISP-CLIENT"))
+              (ql-dist-package (find-package "QL-DIST")))
+          (ecase quicklisp
+            (nil nil)
+            (:ask (and ql-package ql-dist-package
+                       (funcall (intern "FIND-SYSTEM" ql-dist-package) lib)
+                       (y-or-n-p "Download ~S using quicklisp?" lib)
+                       (funcall (intern "QUICKLOAD" ql-package) lib)))
+            ((t :if-available) (and ql-package ql-dist-package
+                                (funcall (intern "FIND-SYSTEM" ql-dist-package) lib)
+                                (funcall (intern "QUICKLOAD" ql-package) lib)))
+            (:force (and (or (and ql-package ql-dist-package) (error "Quicklisp is not available."))
+                         (funcall (intern "FIND-SYSTEM" ql-dist-package) lib)
+                         (funcall (intern "QUICKLOAD" ql-package) lib)))))))) 
 
 ;;; Dependencies: auxiliary functions for the server
 
