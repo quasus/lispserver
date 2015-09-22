@@ -23,7 +23,7 @@
 
 (defmethod sb-gray:stream-write-string ((stream server-stream) string &optional (start 0) end)
   (let ((buf (server-stream-buffer stream)))
-    (loop :for i fixnum :from start :to (or end (1- (length string)))
+    (loop :for i fixnum :from start :below (or end (length string))
           :when (= (length buf) (array-dimension buf 0))
           :do (write-buffer buf
                             (server-stream-stream stream)
