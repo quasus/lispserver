@@ -22,39 +22,41 @@
 
 Dependency management
 
+In the dependency file each line represents a (program) name and a library it depends on separated by a space.
+
 |#
 
+;;; FIXME: do we really need this struct?  It's a relic of an ancient code.
 (defstruct dependency lib names)
 
 (defun parse-dependency-line (string)
-  "Given a string, return correspondent dependency or NIL if STRING is empty or starts with a space."
-  (if (or (zerop (length string))
-          (eql (char string 0) #\Space))
-      nil
-      ;; basically, split by spaces
-      (let ((name-deps (loop :for c :across string
-                             :for end :from 0
-                             :with start = 0
-                             :when (and (eql c #\Space)
-                                        (> end start))
-                             :collect (subseq string start end)
-                             :when (and (= end (1- (length string)))
-                                        (not (eql c #\Space)))
-                             :collect (subseq string start)
-                             :when (eql c #\Space)
-                             :do (setf start (1+ end)))))
-        (make-dependency :lib (first name-deps) :names (rest name-deps)))))
+  "Given a string, return a list with one or two values: the program name and the library name if present.   If the string is malformed, return NIL."
+  (let ((space-pos (position #\Space string)))
+    (cond ((or (zerop (length string))
+               (eql (char string 0) #\Space))
+           nil)
+          ((null space-pos) (list string nil))
+          (t (list (subseq string (1+ space-pos)) (subseq string 0 space-pos))))))
 
+;;; This one seems rather inefficient.
 (defun parse-dependency-file (file)
   "Return list of dependencies, T if the file exists and NIL, NIL if it does not.  Can signal ERRORs if something goes wrong with the system."
   (with-open-file (in file :direction :input
                       :if-does-not-exist nil)
     (if in
-        (values (loop :for line = (read-line in nil)
-                      :while line
-                      :when (parse-dependency-line line)
-                      :collect it)
-                t)
+        (let* ((deps (loop :for line = (read-line in nil)
+                           :while line
+                           :when (parse-dependency-line line)
+                           :collect it))
+               (libs (remove-duplicates (mapcar #'first deps) :test #'equal)))
+          (values
+            (loop :for lib :in libs
+                  :collect (make-dependency :lib lib
+                                            :names (loop :for (l n) :in deps
+                                                         :when (and (equal l lib)
+                                                                    n)
+                                                         :collect n)))
+            t))
         (values nil nil))))
 
 #|
@@ -75,7 +77,7 @@ querying the user.  It seems to be innocuous.
         (let ((ql-package (find-package "QUICKLISP-CLIENT"))
               (ql-dist-package (find-package "QL-DIST")))
           (ecase quicklisp
-            (nil nil)
+            ((nil) nil)
             (:ask (and ql-package ql-dist-package
                        (funcall (intern "FIND-SYSTEM" ql-dist-package) lib)
                        (y-or-n-p "Download ~S using quicklisp?" lib)
@@ -183,7 +185,7 @@ querying the user.  It seems to be innocuous.
                      :if-exists :supersede)
     (with-standard-io-syntax
       (format o "#!/bin/sh
-lispctl eval ~A `pwd`/ \"$0\" \"$@\"
+lispctl eval ~A \"$0\" \"$@\"
 "
               (uiop/run-program:escape-sh-token (if (stringp form)
                                                     form

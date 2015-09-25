@@ -1,105 +1,359 @@
 #!/bin/sh
 
-IO_SOCKET="$HOME/.lispserver/sockets/io-socket"
-
-
+DIR="$HOME/.lispserver"
 SBCL=sbcl
 SBCL_OPTIONS=
 QUICKLISP_SETUP="$HOME"/quicklisp/setup.lisp
 
-start () {
-    $SBCL $SBCL_OPTIONS --eval '(require "ASDF")' --eval '(require "SB-BSD-SOCKETS")' --eval '(require "SB-POSIX")' --eval "(load \"$QUICKLISP_SETUP\")" --eval '(asdf:load-system "lisp-server")'  --eval '(lisp-server-dev::init)' --eval '(lisp-server-dev::start)'
+# FIXME
+SERVER_HOME="/usr/local/bin/lispserver"
+
+PWD=`pwd`
+
+display_help () {
+    echo "Help!  I need somebody."
 }
 
-lisp_eval () {
-    lclient "$IO_SOCKET" "$@"
+# Echo #1 to stderr and exit with error
+
+error_exit () {
+    echo "$1" >&2
+    exit 1
 }
 
-cmd="$1"
-shift
+# TODO This one is horrible.
 
-lisp_say () {
-    form="(format t \"~A~%\" $1)"
-    shift
-    lisp_eval "$form" "$@"
+start_cmd () {
+    $SBCL $SBCL_OPTIONS --eval '(require "ASDF")' --eval '(require "SB-BSD-SOCKETS")' --eval '(require "SB-POSIX")' --eval "(unless (member :quicklisp *features*) (ignore-errors (load \"$QUICKLISP_SETUP\")))" --eval '(asdf:load-system "lisp-server")'  --eval '(lisp-server-dev::init)' --eval '(lisp-server-dev::start)'
+}
+
+
+form=
+
+# Eval `form` with command line args $@ (including argv0)
+
+eval_form () {
+    lclient "$IO_SOCKET" "$form" "$PWD/" "$@"
+}
+
+# Say $1
+
+say () {
+    form="(progn (format t \"~{~A~%~}\" (multiple-value-list $1)) t)"
+    eval_form
 }
 
 # Dependency file:
 # first col: name
 # second col: lib
 
-unregister () {
-    file=$1
-    name=$2
-    backup_file="$file.old"
-    cp "$file" "$backup_file"
-    awk '
-    BEGIN {
-    name = "'"$name"'";
-}
-$1 != name {print $0;}
-' < "$backup_file" > "$file"
+
+reg_type=user
+reg_quicklisp=
+reg_quicklisp_supplied=
+
+# Back up $1 using the name $2 and set the `backup_file` variable to $2.  If $1 is not a regular file, do nothing and unset `backup_file`.  The exit code is that of `cp`.
+
+backup_file=
+do_backup () {
+    if [ -f "$1" ]; then
+        backup_file=$2
+        cp "$1" "$2"
+    else
+        unset backup_file
+    fi
 }
 
-register () {
-    file=$1
-    name=$2
-    shift; shift
-    if [ -f $file ]; then
-        backup_file="$file.old"
-        cp "$file" "$backup_file"
+lib_file=
+lib_backup_file=
+
+set_lib_files () {
+    case "$reg_type" in
+        user)
+            lib_file="$DIR/dependencies.conf"
+            ;;
+        system)
+            lib_file="$SERVER_HOME/dependencies.conf"
+            ;;
+        *)
+            error_exit "This should not have happened."
+            ;;
+    esac
+    lib_backup_file="$lib_file.old"
+}
+
+# Register `name` to `lib_file` having backed it up to `lib_backup_file` with libs $@
+
+name=
+
+register_name () {
+    do_backup "$lib_file" "$lib_backup_file" || exit 1
+    if [ -n "$reg_quicklisp" ]; then
+        form='(lisp-server-dev::load-libs-safely uiop:*command-line-arguments* :reload nil :quicklisp :if-available)'
     else
-        backup_file=/dev/null
+        form='(lisp-server-dev::load-libs-safely uiop:*command-line-arguments* :reload nil :quicklisp nil)'
     fi
     {
-        awk -f "$backup_file" -e '$1 != "'"$name"'" { print $0; }' &
-        for lib in $@; do
-            echo "$name $lib"
+        awk -e '$1 != "'"$name"'" { print $0; }' < "${backup_file-/dev/null}" &
+        for register_name_tmp in "$@"; do
+            echo "$name $register_name_tmp"
         done
-    } | sort | uniq > "$file"
+    } | sort -k1,1 | uniq > "$lib_file" && eval_form nil "$@"
+    #} | sort | uniq
 }
 
-# register: name [lib*]
-# remove what belongs to name, add it with the specified libraries and try to load the libraries
+# Unregister $1 using $2 as the dependency file and $3 as the backup file
+
+unregister () {
+    do_backup "$2" "$3" || exit 1
+    awk '
+    BEGIN {
+    name = "'"$1"'";
+}
+$1 != name {print $0;}
+' < "$3" > "$2"
+}
+
+# By default, set `reg_quicklisp` to quicklisp for per-user registrations and
+# to an empty string for system ones.
+
+reg_set_quicklisp () {
+    if [ -z "$reg_quicklisp_supplied" ]; then
+        case "$reg_type" in
+            user)
+                reg_quicklisp=quicklisp
+                ;;
+            system)
+                reg_quicklisp=
+                ;;
+            *)
+                error_exit "This shouldn't have happened."
+                ;;
+        esac
+    fi
+}
+
+# List registered software with dependencies using `lib_file`.
+
+registered_all=all
+
+registered () {
+    [ -f "$lib_file" ] && awk '
+{ libs[$1] = libs[$1] " "$2 }
+END {
+    for (name in libs) {
+        print name " depends on" libs[name];
+    }
+}' < "$lib_file"
+}
+
+#####################################################################
+
+
+ping_verbose=
+
+do_ping () {
+    if [ -z "$ping_verbose" ]; then
+        form=t
+        eval_form
+    else
+        say '"pong"'
+    fi
+}
+
+### lispctl options
+
+# lispctl isn't supposed to be called without options
+
+[ "$#" -ge 1 ] || error_exit `display_help`
+
+# script options and command
+
+cmd=
+
+while :
+do
+    case "$1" in
+        --directory | -d) # set server directory
+            if [ $# -le 1 ]; then
+                echo "lispctl: missing directory after $1"  &2
+                exit 1
+            fi
+            DIR="$2"
+            shift; shift;
+            ;;
+        -h | -? | --help)
+            display_help
+            exit 0
+            ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            exit 1
+            ;;
+        *)
+            cmd="$1"
+            shift
+            break
+            ;;
+    esac
+done
+
+[ -n "$cmd" ] || error_exit "lispctl: command missing"
+
+# the server directory having been set, set the socket file
+
+IO_SOCKET="$DIR/sockets/io-socket"
+
+ping_cmd () {
+    while :
+    do
+        if [ $# -eq 0 ]; then
+            do_ping
+            break
+        else
+            case "$1" in
+                -q | --quiet)
+                    ping_verbose=
+                    shift;
+                    ;;
+                -v | --verbose)
+                    ping_verbose=verbose
+                    shift;
+                    ;;
+                -*)
+                    error_exit "lispctl ping: unknown option $1"
+                    ;;
+                *)
+                    error_exit "lispctl ping: unknown parameter $1"
+            esac
+        fi
+    done
+}
 
 case "$cmd" in
     eval)
-        lisp_eval "$@"
+        [ $# -ge 1 ] || error_exit "lispctl eval: form missing"
+        form="$1"
+        shift
+        eval_form "$@"
         ;;
     say)
-        lisp_say "$@"
+        [ $# -ge 1 ] || error_exit "lispctl say: form missing"
+        say "$1"
         ;;
     register)
-        {
-            name=$1; shift
-            deps=$@
-            file=`lisp_eval '(write-string (namestring (lisp-server-dev::dependency-file lisp-server-dev::*user-directory*)))'`
-            register "$file" "$name" $deps
-        } && lisp_eval '(lisp-server-dev::load-libs-safely uiop:*command-line-arguments* :reload nil :quicklisp :if-available)' nil nil $deps
+        while :
+        do
+            case "$1" in
+                -g | --global)
+                    reg_type=system
+                    shift
+                    ;;
+                -l | --local)
+                    reg_type=user
+                    shift
+                    ;;
+                -Q | --quicklisp)
+                    reg_quicklisp=quicklisp
+                    reg_quicklisp_supplied=quicklisp_supplied
+                    shift
+                    ;;
+                +Q | --no-quicklisp)
+                    reg_quicklisp=
+                    reg_quicklisp_supplied=quicklisp_supplied
+                    shift
+                    ;;
+                -*)
+                    error_exit "lispctl $cmd: unknown option $1"
+                    ;;
+                *)
+                    break
+                    ;;
+            esac
+        done
+        reg_set_quicklisp
+        set_lib_files
+        [ "$#" -ge 1 ] || error_exit "lispctl register: name missing."
+        name="$1"
+        shift
+        register_name "$@"
         ;;
     unregister)
-        name=$1; shift
-        file=`lisp_eval '(write-string (namestring (lisp-server-dev::dependency-file lisp-server-dev::*user-directory*)))'`
-        unregister "$file" "$name"
+        while :
+        do
+            case "$1" in
+                -g | --global)
+                    reg_type=system
+                    shift
+                    ;;
+                -l | --local)
+                    reg_type=user
+                    shift
+                    ;;
+                -*)
+                    error_exit "lispctl unregister: unknown option $1"
+                    ;;
+                *)
+                    break
+                    ;;
+            esac
+        done
+        [ "$#" -ge 1 ] || error_exit "lispctl unregister: name missing."
+        set_lib_files
+        unregister "$1" "$lib_file" "$lib_backup_file"
         ;;
-    make)
-        lisp_make "$@"
-        ;;
-    install)
-        lisp_install "$1"
-        ;;
-    uninstall)
-        lisp_uninstall "$1"
+    registered)
+        while :
+        do
+            case "$1" in
+                -g | --global)
+                    reg_type=system
+                    registered_all=
+                    shift
+                    ;;
+                -l | --local)
+                    reg_type=user
+                    registered_all=
+                    shift
+                    ;;
+                -a | --all)
+                    registered_all=all
+                    shift
+                    ;;
+                -*)
+                    error_exit "lispctl registered: unknown option $1"
+                    ;;
+                *)
+                    break
+                    ;;
+            esac
+        done
+        if [ -z "$registered_all" ]; then
+            set_lib_files
+            registered "$lib_file"
+        else
+            echo "System-wide software:"
+            reg_type=system
+            set_lib_files
+            registered "$lib_file"
+            echo "User software:"
+            reg_type=user
+            set_lib_files
+            registered "$lib_file"
+        fi
         ;;
     start)
-        start
+        start_cmd
         ;;
     stop)
-        lisp_eval '(sb-ext:exit)'
+        form='(sb-ext:exit)'
+        eval_form
+        ;;
+    ping)
+        ping_cmd "$@"
         ;;
     *)
         echo "Unknown command: $cmd."
         exit 1
         ;;
 esac
-
