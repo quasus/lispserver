@@ -24,6 +24,7 @@ error_exit () {
 # TODO This one is horrible.
 
 start_cmd () {
+    [ ping_cmd ] && error_exit "Server is running."
     $SBCL $SBCL_OPTIONS --eval '(require "ASDF")' --eval '(require "SB-BSD-SOCKETS")' --eval '(require "SB-POSIX")' --eval "(unless (member :quicklisp *features*) (ignore-errors (load \"$QUICKLISP_SETUP\")))" --eval '(asdf:load-system "lisp-server")'  --eval '(lisp-server-dev::init)' --eval '(lisp-server-dev::start)'
 }
 
