@@ -177,7 +177,7 @@ querying the user.  It seems to be innocuous.
     (stop-server server)))
 
 (defun shell-wrapper (name &key
-                           (entry (concatenate 'string "'" (string-upcase name) "::MAIN"))
+                           (entry (format nil "'~A::main" name))
                            (form (format nil "(funcall ~A uiop:*command-line-arguments*)" entry)))
   (with-open-file (o (merge-pathnames name)
                      :direction :output
